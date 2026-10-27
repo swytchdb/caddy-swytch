@@ -46,6 +46,8 @@ func TestCaddyfile(t *testing.T) {
   max_memory 128mb
   read_timeout 30s
   compress true
+  ssi true
+  data_dir "{env.SWYTCH_DATA_DIR}/redis data"
   cluster_port 7379
  }
 }`), nil)
@@ -61,9 +63,13 @@ func TestCaddyfile(t *testing.T) {
 	if c.Listen != "127.0.0.1:6380" || !c.Compress || c.ReadTimeout != caddy.Duration(30*time.Second) || c.Password != "{env.REDIS_PASSWORD}" {
 		t.Fatalf("unexpected adapted config: %s", config)
 	}
+	if !c.SSI || c.DataDir != "{env.SWYTCH_DATA_DIR}/redis data" {
+		t.Fatalf("missing SSI or data directory in adapted config: %s", config)
+	}
 	for _, body := range []string{
 		"swytch extra", "swytch {\n unknown value\n}", "swytch {\n listen a b\n}",
 		"swytch {\n compress maybe\n}", "swytch {\n listen a\n listen b\n}",
+		"swytch {\n ssi maybe\n}", "swytch {\n ssi\n}", "swytch {\n data_dir\n}",
 		"swytch {\n listen a {\n nested b\n }\n}",
 	} {
 		t.Run(body, func(t *testing.T) {
@@ -97,6 +103,19 @@ func TestValidation(t *testing.T) {
 	provision(t, a)
 	if a.Password != "test-secret" || a.Listen != "127.0.0.1:6379" {
 		t.Fatal("defaults or replacement failed")
+	}
+	if a.SSI || a.DataDir != "" {
+		t.Fatal("SSI and local recovery must be opt-in")
+	}
+	dataDir := filepath.Join(t.TempDir(), "data")
+	t.Setenv("SWYTCH_DATA_DIR", dataDir)
+	withDataDir := &App{Config: Config{DataDir: "{env.SWYTCH_DATA_DIR}"}}
+	provision(t, withDataDir)
+	if withDataDir.DataDir != dataDir {
+		t.Fatal("data directory placeholder was not expanded")
+	}
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Fatalf("Provision must not create the data directory: %v", err)
 	}
 	if runtimeState.server != nil {
 		t.Fatal("Provision started a server")
@@ -234,6 +253,52 @@ func TestCaddyLifecycleAndRedis(t *testing.T) {
 		t.Fatal(err)
 	}
 	connect(t, path).command(t, "+OK\r\n", "AUTH", "secret")
+}
+
+func TestSSIAndLocalRecovery(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{UnixSocket: filepath.Join(dir, "redis.sock"), DataDir: filepath.Join(dir, "data"), SSI: true, MaxMemory: "256mb"}
+	a := &App{Config: cfg}
+	provision(t, a)
+	t.Cleanup(func() {
+		if err := a.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := a.Start(); err != nil {
+		t.Fatal(err)
+	}
+	c, other := connect(t, cfg.UnixSocket), connect(t, cfg.UnixSocket)
+	c.command(t, "+OK\r\n", "MULTI")
+	c.command(t, "+OK\r\n", "SET", "persisted", "value")
+	c.command(t, "$5\r\nvalue\r\n", "GET", "persisted")
+	other.command(t, "$-1\r\n", "GET", "persisted")
+	c.command(t, "*2\r\n+OK\r\n$5\r\nvalue\r\n", "EXEC")
+	other.command(t, "$5\r\nvalue\r\n", "GET", "persisted")
+
+	for _, change := range []func(*Config){
+		func(c *Config) { c.SSI = false },
+		func(c *Config) { c.DataDir = filepath.Join(dir, "other-data") },
+	} {
+		changed := &App{Config: cfg}
+		change(&changed.Config)
+		provision(t, changed)
+		err := changed.Start()
+		if cleanupErr := changed.Cleanup(); cleanupErr != nil {
+			t.Fatal(cleanupErr)
+		}
+		if err == nil || !strings.Contains(err.Error(), "restarting") {
+			t.Fatalf("expected restart-required error, got %v", err)
+		}
+	}
+	other.command(t, "$5\r\nvalue\r\n", "GET", "persisted")
+	if err := a.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Start(); err != nil {
+		t.Fatal(err)
+	}
+	connect(t, cfg.UnixSocket).command(t, "$5\r\nvalue\r\n", "GET", "persisted")
 }
 
 func TestStartFailureAndUnclaimedCleanup(t *testing.T) {
