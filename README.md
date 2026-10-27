@@ -21,7 +21,7 @@ Once published, omit the local replacement:
 xcaddy build --with github.com/swytchdb/caddy-swytch
 ```
 
-The module depends on released Swytch v1.4.0 and Engine v1.0.1; sibling checkouts
+The module depends on released Swytch v1.6.1; sibling checkouts
 are not required. Unlike `caddy-storage`, this app serves application data over
 Redis. It does not configure Caddy's certificate storage. The current sibling
 `caddy-storage` requires Engine v1.0.4, whose `NewRuntime` signature differs from
@@ -43,8 +43,16 @@ upstream Swytch compatibility update first.
 ```
 
 For ACL authentication, replace `password` with `acl_file /etc/swytch/users.acl`.
-The file must already exist and parse successfully. For standalone operation,
-data is an in-memory cache; stopping the final app reference discards it.
+The file must already exist and parse successfully. By default, standalone data
+is an in-memory cache; stopping the final app reference discards it. Set
+`data_dir /var/lib/swytch` for local restart recovery. Disk writes sync
+asynchronously, so recent writes may be lost after a crash; this does not provide
+Swytch Cloud's durability across node loss.
+
+Set `ssi true` to return immediate results inside `MULTI` from an SSI snapshot,
+with writes committed at `EXEC`. The default is `false`, preserving standard
+Redis queued transaction responses. These options correspond to Swytch's
+`--data-dir` and `--ssi` CLI flags.
 
 DNS cluster configuration:
 
@@ -77,32 +85,34 @@ JSON uses the same names under `apps.swytch`. Every Caddyfile option takes one
 value; booleans use `true` or `false`, and durations use strings such as `30s`.
 String fields support Caddy placeholders, including `{env.NAME}`.
 
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `listen` | `127.0.0.1:6379` | TCP address; mutually exclusive with `unix_socket` |
-| `unix_socket` | empty | Unix socket path; must not already exist at first start |
-| `unix_socket_mode` | `0700` | Octal permissions in Caddyfile; numeric mode in JSON (448 for 0700) |
-| `password` | empty | Password for the default user |
-| `acl_file` | empty | Existing ACL file; mutually exclusive with `password` |
-| `max_memory` | `64mb` | Swytch memory limit; accepts sizes or percentages |
-| `compress` | `false` | Compress values in effects |
-| `cluster_passphrase` | empty | Enable peer replication |
-| `connection_secret` | empty | Cloud identity and durability; excludes passphrase and join |
-| `join` | empty | Discovery DNS name; requires passphrase |
-| `cluster_port` | `7379` | Cluster QUIC port; independent of Redis listen port |
-| `cluster_advertise` | auto | Advertised cluster host and port |
-| `max_connections` | `0` | Concurrent client limit; zero is unlimited |
-| `read_timeout` | `0` | Swytch read deadline; zero disables it |
-| `write_timeout` | `0` | Swytch write deadline; zero disables it |
-| `tcp_keepalive` | `0` | Keepalive period passed to Swytch |
-| `read_buffer_size` | `0` | Read buffer bytes; zero uses Swytch's default |
-| `write_buffer_size` | `0` | Write buffer bytes; zero uses Swytch's default |
-| `num_acceptors` | `0` | Accept loops; zero uses Swytch's automatic selection |
-| `debug_logging` | `false` | Swytch command logging |
-| `tls_cert_file` | empty | PEM server certificate |
-| `tls_key_file` | empty | PEM private key; required with certificate |
-| `tls_ca_file` | empty | PEM CA bundle to require client certificates (mTLS) |
-| `tls_min_version` | `1.2` | `1.2` or `1.3` |
+| Option               | Default          | Purpose                                                             |
+|----------------------|------------------|---------------------------------------------------------------------|
+| `listen`             | `127.0.0.1:6379` | TCP address; mutually exclusive with `unix_socket`                  |
+| `unix_socket`        | empty            | Unix socket path; must not already exist at first start             |
+| `unix_socket_mode`   | `0700`           | Octal permissions in Caddyfile; numeric mode in JSON (448 for 0700) |
+| `password`           | empty            | Password for the default user                                       |
+| `acl_file`           | empty            | Existing ACL file; mutually exclusive with `password`               |
+| `max_memory`         | `64mb`           | Swytch memory limit; accepts sizes or percentages                   |
+| `compress`           | `false`          | Compress values in effects                                          |
+| `ssi`                | `false`          | Immediate snapshot results inside MULTI; commit writes at EXEC       |
+| `data_dir`           | empty            | Local restart recovery directory; writes sync asynchronously         |
+| `cluster_passphrase` | empty            | Enable peer replication                                             |
+| `connection_secret`  | empty            | Cloud identity and durability; excludes passphrase and join         |
+| `join`               | empty            | Discovery DNS name; requires passphrase                             |
+| `cluster_port`       | `7379`           | Cluster QUIC port; independent of Redis listen port                 |
+| `cluster_advertise`  | auto             | Advertised cluster host and port                                    |
+| `max_connections`    | `0`              | Concurrent client limit; zero is unlimited                          |
+| `read_timeout`       | `0`              | Swytch read deadline; zero disables it                              |
+| `write_timeout`      | `0`              | Swytch write deadline; zero disables it                             |
+| `tcp_keepalive`      | `0`              | Keepalive period passed to Swytch                                   |
+| `read_buffer_size`   | `0`              | Read buffer bytes; zero uses Swytch's default                       |
+| `write_buffer_size`  | `0`              | Write buffer bytes; zero uses Swytch's default                      |
+| `num_acceptors`      | `0`              | Accept loops; zero uses Swytch's automatic selection                |
+| `debug_logging`      | `false`          | Swytch command logging                                              |
+| `tls_cert_file`      | empty            | PEM server certificate                                              |
+| `tls_key_file`       | empty            | PEM private key; required with certificate                          |
+| `tls_ca_file`        | empty            | PEM CA bundle to require client certificates (mTLS)                 |
+| `tls_min_version`    | `1.2`            | `1.2` or `1.3`                                                      |
 
 TLS uses Swytch's certificate-file support. Automatic Caddy certificate issuance
 and renewal are not wired to the Redis listener. Swytch's CLI entry point is not
@@ -113,13 +123,13 @@ Example JSON:
 
 ```json
 {
-  "apps": {
-    "swytch": {
-      "listen": "127.0.0.1:6379",
-      "password": "{env.REDIS_PASSWORD}",
-      "max_memory": "64mb"
+    "apps": {
+        "swytch": {
+            "listen": "127.0.0.1:6379",
+            "password": "{env.REDIS_PASSWORD}",
+            "max_memory": "64mb"
+        }
     }
-  }
 }
 ```
 
@@ -149,6 +159,7 @@ go vet ./...
 
 Tests exercise Caddyfile adaptation, validation, real RESP commands over a Unix
 socket, TLS, pub/sub, blocking commands, Caddy reload and rollback,
+SSI transaction results and isolation, local recovery after a clean shutdown,
 shutdown/restart, and listener-start failure.
 They do not validate a multi-node cluster or Swytch Cloud deployment.
 

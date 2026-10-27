@@ -119,6 +119,14 @@ type Config struct {
 	// Peers with different compression settings can interoperate.
 	Compress bool `json:"compress,omitempty"`
 
+	// Return immediate results inside MULTI using an SSI snapshot, committing
+	// writes at EXEC. Defaults to false (standard Redis queued transactions).
+	SSI bool `json:"ssi,omitempty"`
+
+	// Directory for local restart recovery. Empty keeps data in memory only.
+	// Writes sync asynchronously; this does not provide Cloud durability.
+	DataDir string `json:"data_dir,omitempty"`
+
 	// Shared passphrase enabling peer replication and deriving the cluster's
 	// mutual TLS identity. Peers must use the same passphrase. Use join for DNS
 	// peer discovery. Mutually exclusive with connection_secret.
@@ -170,7 +178,8 @@ type Config struct {
 // expanded during provisioning.
 //
 // By default, Swytch runs as an in-memory standalone cache whose data is lost
-// on shutdown. Set cluster_passphrase and join for DNS-discovered peer
+// on shutdown. Set data_dir for local restart recovery with asynchronous disk
+// writes. Set cluster_passphrase and join for DNS-discovered peer
 // replication, or connection_secret for Swytch Cloud membership and durable,
 // zero-knowledge encrypted storage. Peer replication alone does not provide
 // Cloud's durability across restarts and node loss. Joining peers or Cloud can
@@ -204,6 +213,7 @@ func (a *App) Provision(_ caddy.Context) error {
 	a.TLSCAFile = repl.ReplaceAll(a.TLSCAFile, "")
 	a.TLSMinVersion = repl.ReplaceAll(a.TLSMinVersion, "")
 	a.MaxMemory = repl.ReplaceAll(a.MaxMemory, "")
+	a.DataDir = repl.ReplaceAll(a.DataDir, "")
 	a.ClusterPassphrase = repl.ReplaceAll(a.ClusterPassphrase, "")
 	a.ConnectionSecret = repl.ReplaceAll(a.ConnectionSecret, "")
 	a.Join = repl.ReplaceAll(a.Join, "")
@@ -304,6 +314,7 @@ func (a *App) serverConfig() redis.ServerConfig {
 		Password: a.Password, ACLFile: a.ACLFile, ReadTimeout: time.Duration(a.ReadTimeout),
 		WriteTimeout: time.Duration(a.WriteTimeout), MaxConnections: a.MaxConnections,
 		DebugLogging: a.DebugLogging, TCPKeepAlive: time.Duration(a.TCPKeepAlive),
+		SSI:            a.SSI,
 		ReadBufferSize: a.ReadBufferSize, WriteBufferSize: a.WriteBufferSize, NumAcceptors: a.NumAcceptors,
 		TLSCertFile: a.TLSCertFile, TLSKeyFile: a.TLSKeyFile, TLSCAFile: a.TLSCAFile, TLSMinVersion: a.TLSMinVersion,
 	}
@@ -367,6 +378,7 @@ func (a *App) Start() error {
 	}
 	limit, percent, _ := beacon.ParseMemoryLimit(a.MaxMemory)
 	cfg := &redis.EffectsConfig{MemoryLimit: limit, MemoryLimitPercent: percent,
+		DataDir:           a.DataDir,
 		ClusterPassphrase: a.ClusterPassphrase, Cloud: a.ConnectionSecret,
 		JoinAddr: a.Join, ClusterPort: a.ClusterPort, AdvertiseAddr: a.ClusterAdvertise, Compress: a.Compress}
 	server, err := redis.NewServer(a.serverConfig())
@@ -497,6 +509,10 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			a.MaxMemory = value
 		case "compress":
 			a.Compress, err = strconv.ParseBool(value)
+		case "ssi":
+			a.SSI, err = strconv.ParseBool(value)
+		case "data_dir":
+			a.DataDir = value
 		case "cluster_passphrase":
 			a.ClusterPassphrase = value
 		case "connection_secret":
