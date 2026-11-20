@@ -9,24 +9,24 @@ Swytch release, not a claim that every upstream Redis command is supported.
 
 ## Build
 
-Requires Go 1.27 or later. From this checkout:
+Requires Go 1.27.3 or later. From this checkout:
 
 ```sh
-xcaddy build --with github.com/swytchdb/caddy-swytch="$PWD"
+xcaddy build --replace github.com/quic-go/quic-go=github.com/quic-go/quic-go@v0.64.1 --with github.com/swytchdb/caddy-swytch="$PWD"
 ```
 
 Once published, omit the local replacement:
 
 ```sh
-xcaddy build --with github.com/swytchdb/caddy-swytch
+xcaddy build --replace github.com/quic-go/quic-go=github.com/quic-go/quic-go@v0.64.1 --with github.com/swytchdb/caddy-swytch
 ```
 
-The module depends on released Swytch v1.6.1; sibling checkouts
-are not required. Unlike `caddy-storage`, this app serves application data over
-Redis. It does not configure Caddy's certificate storage. The current sibling
-`caddy-storage` requires Engine v1.0.4, whose `NewRuntime` signature differs from
-Swytch v1.4.0's dependency. Combining those versions in one binary requires an
-upstream Swytch compatibility update first.
+The module depends on released Swytch v1.7.1 and Engine v1.3.1; sibling
+checkouts are not required. This app serves application data over Redis. Use
+`caddy-storage` to configure Caddy's certificate storage.
+
+Caddy v2.11.9 requires the QUIC v0.64.1 replacement shown above. `xcaddy`
+creates its own module, so it does not inherit this repository's `replace` directive.
 
 ## Caddyfile
 
